@@ -1,4 +1,8 @@
-use crate::{command_dispatcher::UserHandle, util::Reader, Command};
+use crate::{
+    command_dispatcher::UserHandle,
+    util::{Reader, HELP_MESSAGE, START_MESSAGE},
+    Command,
+};
 
 use anyhow::{bail, ensure, Context, Result};
 use log::*;
@@ -33,8 +37,16 @@ enum Action {
 
 type ThreadId = String;
 
+#[allow(dead_code)]
+enum AnonimityMode {
+    Me,
+    Them,
+    Both,
+}
+
 struct Thread {
     id: ThreadId,
+    anon_mode: AnonimityMode,
     other_id: ThreadId,
     other_handle: UserHandle,
 }
@@ -118,8 +130,9 @@ impl Handler {
 
     async fn handle_command(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::Help | Command::Start => self.send_to_self("TODO: help message.").await,
-            Command::List => {
+            Command::Start => self.send_to_self(START_MESSAGE).await,
+            Command::Help => self.send_to_self(HELP_MESSAGE).await,
+            Command::Users => {
                 let mut usernames = self
                     .handle_registry
                     .read()
@@ -134,19 +147,29 @@ impl Handler {
                     })
                     .collect::<Vec<_>>();
                 usernames.sort();
-                self.send_to_self(format!(
-                    "Available users:\n  * {}",
-                    usernames.join("\n  * "),
-                ))
-                .await
+                self.send_to_self(format!("Available users:\n* {}", usernames.join("\n* "),))
+                    .await
+            }
+            Command::Threads => {
+                let thread_ids = self
+                    .threads
+                    .keys()
+                    .filter(|s| s.starts_with("#"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if thread_ids.is_empty() {
+                    self.send_to_self("There are no active threads.").await
+                } else {
+                    self.send_to_self(format!("Active threads:\n* {}", thread_ids.join("\n* "),))
+                        .await
+                }
             }
             Command::Send { thread_id, message } => {
                 if !self.threads.contains_key(&thread_id) {
                     let thread = self.create_thread(thread_id.clone()).await?;
                     self.threads.insert(thread_id.clone(), thread);
                 }
-                self.threads[&thread_id].send_message(message).await?;
-                self.send_to_self("OK.").await
+                self.threads[&thread_id].send_message(message).await
             }
         }
     }
@@ -176,11 +199,13 @@ impl Handler {
 
         let my_thread = Thread {
             id: thread_id.clone(),
+            anon_mode: AnonimityMode::Me,
             other_id: other_thread_id.clone(),
             other_handle: other_handle.clone(),
         };
         let other_thread = Thread {
             id: other_thread_id,
+            anon_mode: AnonimityMode::Them,
             other_id: thread_id.clone(),
             other_handle: self.user_handle.clone(),
         };
@@ -224,13 +249,29 @@ impl Handler {
                 Ok(())
             }
             Action::RelayMessage(thread_id, message) => {
-                self.send_to_self(format!(">>> @{}:\n{}", thread_id, message))
-                    .await
+                let thread = &self.threads[&thread_id];
+                let message = match thread.anon_mode {
+                    AnonimityMode::Me => {
+                        format!(">>> Message from {}:\n{}", thread_id, message)
+                    }
+                    AnonimityMode::Them => {
+                        format!(">>> Message from anonymous {}:\n{}", thread_id, message)
+                    }
+                    AnonimityMode::Both => {
+                        format!(">>> Message from random chat {}:\n{}", thread_id, message)
+                    }
+                };
+                self.send_to_self(message).await
             }
         }
     }
 
     async fn send_to_self(&mut self, message: impl AsRef<str>) -> Result<()> {
+        debug!(
+            "sending message to @{}: {}",
+            self.user_handle.user.login,
+            message.as_ref()
+        );
         self.bot
             .send_message(self.chat_id, message.as_ref())
             .await

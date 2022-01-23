@@ -8,7 +8,8 @@ use std::str::FromStr;
 pub enum Command {
     Start,
     Help,
-    List,
+    Users,
+    Threads,
     Send { thread_id: String, message: String },
 }
 
@@ -21,7 +22,8 @@ impl FromStr for Command {
         match head {
             "/start" => Ok(Command::Start),
             "/help" => Ok(Command::Help),
-            "/list" => Ok(Command::List),
+            "/users" => Ok(Command::Users),
+            "/threads" => Ok(Command::Threads),
             "/send" => {
                 let receiver = iter
                     .next()

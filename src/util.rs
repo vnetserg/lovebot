@@ -2,6 +2,23 @@ use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 ////////////////////////////////////////////////////////////////////////////////
 
+pub const START_MESSAGE: &str = "\
+Hello! This is anonymous chatting bot. Quick start guide:
+
+* Use command `/send @sergio_4min Hello!` to send an anonymous message to a particular user;
+* Use command `/users` to list all available users.
+
+For more commands, use `/help`.";
+
+pub const HELP_MESSAGE: &str = "\
+Available commands:
+* `/send [receiver] [message]` - send a message. Receiver can either be a @username or a #thread.
+* `/users` - list available users.
+* `/threads` - list active anonymous threads.
+* `/help` - show this message.";
+
+////////////////////////////////////////////////////////////////////////////////
+
 pub struct Writer<T> {
     inner: Arc<RwLock<T>>,
 }

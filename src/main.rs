@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use lovebot::{CommandDispatcher, User};
+use lovebot::{Command, CommandDispatcher, User};
 
 use anyhow::{Context, Result};
 use log::*;
@@ -14,11 +14,7 @@ async fn handle_message(
 ) -> Result<()> {
     let user = User::try_from(cx.update.from().context("message has unknown sender")?)
         .context("failed to parse user")?;
-    let message = cx
-        .update
-        .text()
-        .context("non-text messages are not supported")?;
-    let command = message.parse().context("failed to parse command")?;
+    let command = Command::try_from(&cx.update).context("failed to parse command")?;
     command_dispatcher
         .handle_command(Arc::new(user), cx.chat_id(), command)
         .await

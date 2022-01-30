@@ -15,7 +15,12 @@ Available commands:
 * `/send [receiver] [message]` - send a message. Receiver can either be a @username or a #thread.
 * `/users` - list available users.
 * `/threads` - list active anonymous threads.
-* `/help` - show this message.";
+* `/help` - show this message.
+
+Hints:
+* You can reply to a message instead of using `/send` command.
+
+Should you need any further assistance, write to @sergio_4min.";
 
 ////////////////////////////////////////////////////////////////////////////////
 

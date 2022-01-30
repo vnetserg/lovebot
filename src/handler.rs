@@ -6,7 +6,7 @@ use crate::{
 
 use anyhow::{bail, ensure, Context, Result};
 use log::*;
-use teloxide::{adaptors::AutoSend, prelude::Requester, Bot};
+use teloxide::{adaptors::AutoSend, prelude::Requester, types::Message, Bot};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -30,7 +30,7 @@ pub struct ActionRequest {
 
 enum Action {
     StartAnonymousThread(Thread),
-    RelayMessage(ThreadId, String),
+    SendText(ThreadId, String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -52,15 +52,15 @@ struct Thread {
 }
 
 impl Thread {
-    async fn send_message(&self, message: String) -> Result<()> {
+    async fn send_text(&self, text: String) -> Result<()> {
         let (result_sender, result_receiver) = oneshot::channel();
-        let relay_request = ActionRequest {
-            action: Action::RelayMessage(self.other_id.clone(), message),
+        let action_request = ActionRequest {
+            action: Action::SendText(self.other_id.clone(), text),
             result_sender,
         };
         self.other_handle
             .channel
-            .send(relay_request)
+            .send(action_request)
             .await
             .unwrap_or_else(|err| panic!("failed to send relay request: {}", err));
         result_receiver
@@ -79,6 +79,7 @@ pub struct Handler {
     command_receiver: mpsc::Receiver<CommandRequest>,
     action_receiver: mpsc::Receiver<ActionRequest>,
     threads: HashMap<ThreadId, Thread>,
+    message_id_to_thread_id: HashMap<i32, ThreadId>,
 }
 
 impl Handler {
@@ -98,6 +99,7 @@ impl Handler {
             command_receiver,
             action_receiver: message_receiver,
             threads: HashMap::new(),
+            message_id_to_thread_id: HashMap::new(),
         }
     }
 
@@ -130,8 +132,12 @@ impl Handler {
 
     async fn handle_command(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::Start => self.send_to_self(START_MESSAGE).await,
-            Command::Help => self.send_to_self(HELP_MESSAGE).await,
+            Command::Start => {
+                self.send_to_self(START_MESSAGE).await?;
+            }
+            Command::Help => {
+                self.send_to_self(HELP_MESSAGE).await?;
+            }
             Command::Users => {
                 let mut usernames = self
                     .handle_registry
@@ -148,7 +154,7 @@ impl Handler {
                     .collect::<Vec<_>>();
                 usernames.sort();
                 self.send_to_self(format!("Available users:\n* {}", usernames.join("\n* "),))
-                    .await
+                    .await?;
             }
             Command::Threads => {
                 let thread_ids = self
@@ -158,20 +164,43 @@ impl Handler {
                     .cloned()
                     .collect::<Vec<_>>();
                 if thread_ids.is_empty() {
-                    self.send_to_self("There are no active threads.").await
+                    self.send_to_self("There are no active threads.").await?;
                 } else {
                     self.send_to_self(format!("Active threads:\n* {}", thread_ids.join("\n* "),))
-                        .await
+                        .await?;
                 }
             }
-            Command::Send { thread_id, message } => {
+            Command::Send {
+                thread_id,
+                message_id,
+                text,
+            } => {
                 if !self.threads.contains_key(&thread_id) {
                     let thread = self.create_thread(thread_id.clone()).await?;
                     self.threads.insert(thread_id.clone(), thread);
                 }
-                self.threads[&thread_id].send_message(message).await
+                self.threads[&thread_id].send_text(text).await?;
+                self.message_id_to_thread_id.insert(message_id, thread_id);
+            }
+            Command::Reply {
+                reply_message_id,
+                message_id,
+                text,
+            } => {
+                let thread_id = self
+                    .message_id_to_thread_id
+                    .get(&reply_message_id)
+                    .context("message you are replying to does not belong to a thread")?
+                    .clone();
+                self.threads
+                    .get(&thread_id)
+                    .context("the thread does not exist anymore")?
+                    .send_text(text)
+                    .await?;
+                self.message_id_to_thread_id.insert(message_id, thread_id);
             }
         }
+        Ok(())
     }
 
     async fn create_thread(&mut self, thread_id: ThreadId) -> Result<Thread> {
@@ -195,7 +224,7 @@ impl Handler {
             .get(login)
             .with_context(|| format!("user @{} has not started this bot", login))?
             .clone();
-        let other_thread_id = Self::random_thread_id();
+        let other_thread_id = format!("#{:08x}", rand::random::<u32>());
 
         let my_thread = Thread {
             id: thread_id.clone(),
@@ -234,10 +263,6 @@ impl Handler {
         Ok(my_thread)
     }
 
-    fn random_thread_id() -> String {
-        format!("#{:08x}", rand::random::<u32>())
-    }
-
     async fn handle_action(&mut self, action: Action) -> Result<()> {
         match action {
             Action::StartAnonymousThread(thread) => {
@@ -246,27 +271,28 @@ impl Handler {
                     bail!("thread id {} is already used", thread_id)
                 }
                 self.threads.insert(thread_id, thread);
-                Ok(())
             }
-            Action::RelayMessage(thread_id, message) => {
+            Action::SendText(thread_id, text) => {
                 let thread = &self.threads[&thread_id];
-                let message = match thread.anon_mode {
+                let formatted_text = match thread.anon_mode {
                     AnonimityMode::Me => {
-                        format!(">>> Message from {}:\n{}", thread_id, message)
+                        format!(">>> Message from {}:\n{}", thread_id, text)
                     }
                     AnonimityMode::Them => {
-                        format!(">>> Message from anonymous {}:\n{}", thread_id, message)
+                        format!(">>> Message from anonymous {}:\n{}", thread_id, text)
                     }
                     AnonimityMode::Both => {
-                        format!(">>> Message from random chat {}:\n{}", thread_id, message)
+                        format!(">>> Message from random chat {}:\n{}", thread_id, text)
                     }
                 };
-                self.send_to_self(message).await
+                let message = self.send_to_self(formatted_text).await?;
+                self.message_id_to_thread_id.insert(message.id, thread_id);
             }
         }
+        Ok(())
     }
 
-    async fn send_to_self(&mut self, message: impl AsRef<str>) -> Result<()> {
+    async fn send_to_self(&mut self, message: impl AsRef<str>) -> Result<Message> {
         debug!(
             "sending message to @{}: {}",
             self.user_handle.user.login,
@@ -280,7 +306,6 @@ impl Handler {
                     "failed to send message to user @{}",
                     self.user_handle.user.login
                 )
-            })?;
-        Ok(())
+            })
     }
 }

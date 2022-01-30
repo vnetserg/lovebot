@@ -1,6 +1,5 @@
 use anyhow::{bail, Context};
-
-use std::str::FromStr;
+use teloxide::types::Message;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -10,32 +9,51 @@ pub enum Command {
     Help,
     Users,
     Threads,
-    Send { thread_id: String, message: String },
+    Send {
+        thread_id: String,
+        message_id: i32,
+        text: String,
+    },
+    Reply {
+        message_id: i32,
+        reply_message_id: i32,
+        text: String,
+    },
 }
 
-impl FromStr for Command {
-    type Err = anyhow::Error;
+impl TryFrom<&Message> for Command {
+    type Error = anyhow::Error;
 
-    fn from_str(s: &str) -> anyhow::Result<Self> {
-        let mut iter = s.trim_start().split(" ");
-        let head = iter.next().with_context(|| format!("empty message"))?;
-        match head {
-            "/start" => Ok(Command::Start),
-            "/help" => Ok(Command::Help),
-            "/users" => Ok(Command::Users),
-            "/threads" => Ok(Command::Threads),
+    fn try_from(message: &Message) -> anyhow::Result<Self> {
+        let text = message
+            .text()
+            .context("non-text messages are not supported")?;
+        if let Some(reply_to) = message.reply_to_message() {
+            return Ok(Command::Reply {
+                message_id: message.id,
+                reply_message_id: reply_to.id,
+                text: text.to_string(),
+            });
+        }
+
+        let mut iter = text.trim_start().split(" ");
+        let head = iter.next().context("empty message")?;
+        let command = match head {
+            "/start" => Command::Start,
+            "/help" => Command::Help,
+            "/users" => Command::Users,
+            "/threads" => Command::Threads,
             "/send" => {
-                let receiver = iter
-                    .next()
-                    .with_context(|| format!("no receiver specified"))?
-                    .to_string();
-                let message = iter.collect::<Vec<_>>().join(" ");
-                Ok(Command::Send {
+                let receiver = iter.next().context("no receiver specified")?.to_string();
+                let text = iter.collect::<Vec<_>>().join(" ");
+                Command::Send {
+                    message_id: message.id,
                     thread_id: receiver,
-                    message,
-                })
+                    text,
+                }
             }
             _ => bail!("unknown command: {}", head),
-        }
+        };
+        Ok(command)
     }
 }

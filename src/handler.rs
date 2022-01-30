@@ -6,6 +6,7 @@ use crate::{
 
 use anyhow::{bail, ensure, Context, Result};
 use log::*;
+use rand::prelude::IteratorRandom;
 use teloxide::{adaptors::AutoSend, prelude::Requester, types::Message, Bot};
 use tokio::{
     select,
@@ -62,10 +63,10 @@ impl Thread {
             .channel
             .send(action_request)
             .await
-            .unwrap_or_else(|err| panic!("failed to send relay request: {}", err));
+            .unwrap_or_else(|err| panic!("failed to send action request: {}", err));
         result_receiver
             .await
-            .unwrap_or_else(|err| panic!("failed to get relay result: {}", err))
+            .unwrap_or_else(|err| panic!("failed to get action result: {}", err))
     }
 }
 
@@ -142,7 +143,7 @@ impl Handler {
                 let mut usernames = self
                     .handle_registry
                     .read()
-                    .expect("handler message_channels.read() failed")
+                    .expect("handler handle_registry.read() failed")
                     .values()
                     .map(|h| {
                         if let Some(last_name) = h.user.last_name.as_ref() {
@@ -157,18 +158,41 @@ impl Handler {
                     .await?;
             }
             Command::Threads => {
-                let thread_ids = self
+                let mut thread_ids = self
                     .threads
                     .keys()
                     .filter(|s| s.starts_with("#"))
                     .cloned()
                     .collect::<Vec<_>>();
+                thread_ids.sort();
                 if thread_ids.is_empty() {
                     self.send_to_self("There are no active threads.").await?;
                 } else {
-                    self.send_to_self(format!("Active threads:\n* {}", thread_ids.join("\n* "),))
+                    self.send_to_self(format!("Active threads:\n* {}", thread_ids.join("\n* ")))
                         .await?;
                 }
+            }
+            Command::Random { message_id, text } => {
+                let login = self
+                    .handle_registry
+                    .read()
+                    .expect("handler handle_registry.read() failed")
+                    .values()
+                    .map(|h| h.user.login.clone())
+                    .filter(|login| login != &self.user_handle.user.login)
+                    .choose(&mut rand::thread_rng())
+                    .context("there are currently no other users to chat with")?;
+
+                let thread_id = Self::random_thread_id();
+                self.create_thread(thread_id.clone(), &login).await?;
+                self.message_id_to_thread_id
+                    .insert(message_id, thread_id.clone());
+                self.threads[&thread_id].send_text(text).await?;
+
+                let message = self
+                    .send_to_self(format!("Started a new anonymous thread {}.", thread_id))
+                    .await?;
+                self.message_id_to_thread_id.insert(message.id, thread_id);
             }
             Command::Send {
                 thread_id,
@@ -176,9 +200,17 @@ impl Handler {
                 text,
             } => {
                 if !self.threads.contains_key(&thread_id) {
-                    let thread = self.create_thread(thread_id.clone()).await?;
-                    self.threads.insert(thread_id.clone(), thread);
+                    if !thread_id.starts_with("@") {
+                        bail!("unknown thread: {}", thread_id);
+                    }
+                    let login = &thread_id[1..];
+                    ensure!(
+                        login != self.user_handle.user.login,
+                        "cannot send a message to self"
+                    );
+                    self.create_thread(thread_id.clone(), login).await?;
                 }
+
                 self.threads[&thread_id].send_text(text).await?;
                 self.message_id_to_thread_id.insert(message_id, thread_id);
             }
@@ -203,28 +235,15 @@ impl Handler {
         Ok(())
     }
 
-    async fn create_thread(&mut self, thread_id: ThreadId) -> Result<Thread> {
-        ensure!(
-            thread_id.starts_with("@"),
-            "thread {} is not found",
-            thread_id,
-        );
-        let login = &thread_id[1..];
-
-        // NB: this prevents deadlock.
-        ensure!(
-            login != self.user_handle.user.login,
-            "cannot send a message to self"
-        );
-
+    async fn create_thread(&mut self, thread_id: ThreadId, other_login: &str) -> Result<()> {
         let other_handle = self
             .handle_registry
             .read()
             .expect("handler handle_registry.read() failed")
-            .get(login)
-            .with_context(|| format!("user @{} has not started this bot", login))?
+            .get(other_login)
+            .with_context(|| format!("user @{} has not started this bot", other_login))?
             .clone();
-        let other_thread_id = format!("#{:08x}", rand::random::<u32>());
+        let other_thread_id = Self::random_thread_id();
 
         let my_thread = Thread {
             id: thread_id.clone(),
@@ -251,16 +270,22 @@ impl Handler {
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to send thread start request to @{} handler: {}",
-                    login, err
+                    other_login, err
                 )
             });
         result_receiver.await.unwrap_or_else(|err| {
             panic!(
                 "failed to get thread start result of @{} handler: {}",
-                login, err
+                other_login, err
             )
         })?;
-        Ok(my_thread)
+
+        self.threads.insert(thread_id, my_thread);
+        Ok(())
+    }
+
+    fn random_thread_id() -> ThreadId {
+        format!("#{:08x}", rand::random::<u32>())
     }
 
     async fn handle_action(&mut self, action: Action) -> Result<()> {

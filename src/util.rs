@@ -6,6 +6,7 @@ pub const START_MESSAGE: &str = "\
 Hello! This is anonymous chatting bot. Quick start guide:
 
 * Use command `/send @sergio_4min Hello!` to send an anonymous message to a particular user;
+* Use command `/random Hello!` to send an anonymous message to a random user.
 * Use command `/users` to list all available users.
 
 For more commands, use `/help`.";
@@ -13,6 +14,7 @@ For more commands, use `/help`.";
 pub const HELP_MESSAGE: &str = "\
 Available commands:
 * `/send [receiver] [message]` - send a message. Receiver can either be a @username or a #thread.
+* `/random [message]` - send a message to a random user.
 * `/users` - list available users.
 * `/threads` - list active anonymous threads.
 * `/help` - show this message.

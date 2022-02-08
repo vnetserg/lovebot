@@ -1,43 +1,21 @@
 use crate::{
-    handler::{ActionRequest, CommandRequest, Handler},
+    data::User,
+    event_log::{Event, EventLogReader, EventTracker, UserConnectedEvent},
+    handler::{ActionRequest, CommandRequest, Handler, HandlerBuilder},
     util::Writer,
-    Command,
+    Command, EventServiceHandle,
 };
 
 use anyhow::{Context, Result};
+use log::info;
 use teloxide::{adaptors::AutoSend, Bot};
 use tokio::sync::{mpsc, oneshot};
 
 use std::{
     collections::HashMap,
+    io::BufRead,
     sync::{Arc, Mutex},
 };
-
-////////////////////////////////////////////////////////////////////////////////
-
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct User {
-    pub login: String,
-    pub first_name: String,
-    pub last_name: Option<String>,
-}
-
-impl TryFrom<&teloxide::types::User> for User {
-    type Error = anyhow::Error;
-
-    fn try_from(tg_user: &teloxide::types::User) -> Result<Self> {
-        Ok(User {
-            login: tg_user
-                .username
-                .as_ref()
-                .context("user has no username")?
-                .clone(),
-            first_name: tg_user.first_name.clone(),
-            last_name: tg_user.last_name.clone(),
-        })
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -49,43 +27,126 @@ pub struct UserHandle {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+pub struct CommandDispatcherBuilder {
+    command_channels: HashMap<String, mpsc::Sender<CommandRequest>>,
+    user_handles: Writer<HashMap<String, UserHandle>>,
+    builders: HashMap<String, HandlerBuilder>,
+}
+
+impl CommandDispatcherBuilder {
+    pub fn from_event_log<R: BufRead>(reader: R) -> Result<Self> {
+        let mut builder = Self {
+            command_channels: Default::default(),
+            user_handles: Default::default(),
+            builders: Default::default(),
+        };
+
+        let mut reader = EventLogReader::new(reader);
+        let mut count = 0;
+        for mb_event in reader.iter_events() {
+            let event = mb_event.context("failed to read event")?;
+            match event {
+                Event::UserConnected(ev) => builder.handle_user_connected(ev),
+                Event::ThreadStarted(ev) => {
+                    builder
+                        .builders
+                        .get_mut(&ev.login)
+                        .with_context(|| format!("user not found: @{}", ev.login))?
+                        .handle_thread_started(ev)?;
+                }
+                Event::ThreadMessageReceived(ev) => {
+                    builder
+                        .builders
+                        .get_mut(&ev.login)
+                        .with_context(|| format!("user not found: @{}", ev.login))?
+                        .handle_thread_message_received(ev);
+                }
+            }
+            count += 1;
+        }
+
+        info!("Read {} events from event log", count);
+
+        Ok(builder)
+    }
+
+    fn handle_user_connected(&mut self, event: UserConnectedEvent) {
+        let login = event.user.login.clone();
+
+        let (command_sender, command_receiver) = mpsc::channel(100);
+        self.command_channels.insert(login.clone(), command_sender);
+
+        let (action_sender, action_receiver) = mpsc::channel(100);
+        let user_handle = UserHandle {
+            user: Arc::new(event.user),
+            channel: action_sender,
+        };
+        self.user_handles
+            .write()
+            .unwrap()
+            .insert(login.clone(), user_handle.clone());
+
+        self.builders.insert(
+            login,
+            HandlerBuilder::new(
+                user_handle,
+                event.chat_id,
+                self.user_handles.reader(),
+                command_receiver,
+                action_receiver,
+            ),
+        );
+    }
+
+    pub fn build(self, bot: AutoSend<Bot>, event_service: EventServiceHandle) -> CommandDispatcher {
+        for builder in self.builders.into_values() {
+            let mut handler = builder.build(bot.clone(), event_service.clone());
+            tokio::spawn(async move {
+                handler.run().await;
+            });
+        }
+
+        CommandDispatcher {
+            bot,
+            user_handles: self.user_handles,
+            command_channels: Mutex::new(self.command_channels),
+            event_service,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 pub struct CommandDispatcher {
     bot: AutoSend<Bot>,
     command_channels: Mutex<HashMap<String, mpsc::Sender<CommandRequest>>>,
     user_handles: Writer<HashMap<String, UserHandle>>,
+    event_service: EventServiceHandle,
 }
 
 impl CommandDispatcher {
-    pub fn new(bot: AutoSend<Bot>) -> Self {
-        Self {
-            bot,
-            command_channels: Mutex::new(HashMap::new()),
-            user_handles: Writer::new(HashMap::new()),
-        }
-    }
-
     pub async fn handle_command(
         &self,
         user: Arc<User>,
         chat_id: i64,
         command: Command,
     ) -> Result<()> {
-        let command_sender = self
-            .command_channels
-            .lock()
-            .expect("failed to lock handlers")
-            .entry(user.login.clone())
-            .or_insert_with(|| self.spawn_handler(user.clone(), chat_id))
-            .clone();
+        let (command_sender, mb_event_tracker) = self.get_command_sender(&user, chat_id);
 
         let (result_sender, result_receiver) = oneshot::channel();
         let request = CommandRequest {
             command,
             result_sender,
         };
+
         command_sender.send(request).await.unwrap_or_else(|err| {
             panic!("failed to send request to @{} handler: {}", user.login, err)
         });
+        if let Some(event_tracker) = mb_event_tracker {
+            // NB: make sure that UserConnected event has been written to disk
+            // before replying.
+            event_tracker.wait_written().await?;
+        }
         result_receiver.await.unwrap_or_else(|err| {
             panic!(
                 "failed to get command request result of @{} handler: {}",
@@ -94,18 +155,45 @@ impl CommandDispatcher {
         })
     }
 
-    fn spawn_handler(&self, user: Arc<User>, chat_id: i64) -> mpsc::Sender<CommandRequest> {
+    fn get_command_sender(
+        &self,
+        user: &Arc<User>,
+        chat_id: i64,
+    ) -> (mpsc::Sender<CommandRequest>, Option<EventTracker>) {
+        let mut command_channels = self
+            .command_channels
+            .lock()
+            .expect("failed to lock command channels");
+
+        match command_channels.get(&user.login) {
+            Some(channel) => (channel.clone(), None),
+            None => {
+                let event_tracker =
+                    self.event_service
+                        .write(Event::UserConnected(UserConnectedEvent {
+                            user: User::clone(&user),
+                            chat_id,
+                        }));
+                let channel = self.spawn_handler(user, chat_id);
+                command_channels.insert(user.login.clone(), channel.clone());
+                (channel, Some(event_tracker))
+            }
+        }
+    }
+
+    fn spawn_handler(&self, user: &Arc<User>, chat_id: i64) -> mpsc::Sender<CommandRequest> {
         let (command_sender, command_receiver) = mpsc::channel(100);
         let (action_sender, action_receiver) = mpsc::channel(100);
 
         let user_handle = UserHandle {
-            user,
+            user: user.clone(),
             channel: action_sender,
         };
         let mut handler = Handler::new(
-            user_handle.clone(),
             self.bot.clone(),
+            self.event_service.clone(),
             chat_id,
+            user_handle.clone(),
             self.user_handles.reader(),
             command_receiver,
             action_receiver,

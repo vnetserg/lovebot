@@ -24,11 +24,13 @@ Should you need any further assistance, write to @sergio_4min.";
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Default)]
 pub struct Writer<T> {
     inner: Arc<RwLock<T>>,
 }
 
 impl<T> Writer<T> {
+    #[allow(dead_code)]
     pub fn new(value: T) -> Self {
         Self {
             inner: Arc::new(RwLock::new(value)),

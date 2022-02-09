@@ -2,7 +2,7 @@ use crate::{
     command_dispatcher::UserHandle,
     data::{ThreadAnonimityMode, ThreadId},
     event_log::{Event, ThreadMessageReceivedEvent, ThreadStartedEvent},
-    util::{Reader, HELP_MESSAGE, START_MESSAGE},
+    util::{random_adjective, random_noun, Reader, HELP_MESSAGE, START_MESSAGE},
     Command, EventServiceHandle,
 };
 
@@ -454,7 +454,7 @@ impl Handler {
     }
 
     fn random_thread_id() -> ThreadId {
-        format!("#{:08x}", rand::random::<u32>())
+        format!("#{}_{}", random_adjective(), random_noun())
     }
 
     async fn handle_action(&mut self, action: Action) -> Result<()> {

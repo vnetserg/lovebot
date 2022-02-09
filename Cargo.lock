@@ -622,6 +622,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lazy_static",
  "log",
  "pretty_env_logger",
  "rand",

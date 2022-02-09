@@ -1,5 +1,8 @@
 use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use lazy_static::lazy_static;
+use rand::{prelude::SliceRandom, thread_rng};
+
 ////////////////////////////////////////////////////////////////////////////////
 
 pub const START_MESSAGE: &str = "\
@@ -60,4 +63,26 @@ impl<T> Reader<T> {
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
         self.inner.read()
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+pub fn random_noun() -> &'static str {
+    lazy_static! {
+        static ref NOUNS: Vec<String> = {
+            let data = include_str!("../data/nouns.txt");
+            data.split("\n").map(|s| s.to_string()).collect()
+        };
+    }
+    NOUNS.choose(&mut thread_rng()).unwrap()
+}
+
+pub fn random_adjective() -> &'static str {
+    lazy_static! {
+        static ref ADJECTIVES: Vec<String> = {
+            let data = include_str!("../data/adjectives.txt");
+            data.split("\n").map(|s| s.to_string()).collect()
+        };
+    }
+    ADJECTIVES.choose(&mut thread_rng()).unwrap()
 }

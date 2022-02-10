@@ -1,6 +1,8 @@
 use anyhow::{bail, ensure, Context};
 use teloxide::types::Message;
 
+use crate::data::ThreadId;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -14,7 +16,7 @@ pub enum Command {
         text: String,
     },
     Send {
-        thread_id: String,
+        thread_id: ThreadId,
         message_id: i32,
         text: String,
     },
@@ -22,6 +24,9 @@ pub enum Command {
         message_id: i32,
         reply_message_id: i32,
         text: String,
+    },
+    Close {
+        thread_id: ThreadId,
     },
 }
 
@@ -64,6 +69,10 @@ impl TryFrom<&Message> for Command {
                     thread_id: receiver,
                     text,
                 }
+            }
+            "/close" => {
+                let thread_id = iter.next().context("no thread id specified")?.to_string();
+                Command::Close { thread_id }
             }
             _ => bail!("unknown command: {}", head),
         };

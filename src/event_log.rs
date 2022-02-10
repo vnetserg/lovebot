@@ -21,6 +21,7 @@ pub enum Event {
     UserConnected(UserConnectedEvent),
     ThreadStarted(ThreadStartedEvent),
     ThreadMessageReceived(ThreadMessageReceivedEvent),
+    ThreadTerminated(ThreadTerminatedEvent),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +44,14 @@ pub struct ThreadMessageReceivedEvent {
     pub login: String,
     pub message_id: i32,
     pub thread_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThreadTerminatedEvent {
+    pub login: String,
+    pub other_login: String,
+    pub my_thread_id: ThreadId,
+    pub other_thread_id: ThreadId,
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -1,7 +1,7 @@
 use crate::{
     command_dispatcher::UserHandle,
     data::{ThreadAnonimityMode, ThreadId},
-    event_log::{Event, ThreadMessageReceivedEvent, ThreadStartedEvent},
+    event_log::{Event, ThreadMessageReceivedEvent, ThreadStartedEvent, ThreadTerminatedEvent},
     util::{random_adjective, random_noun, Reader, HELP_MESSAGE, START_MESSAGE},
     Command, EventServiceHandle,
 };
@@ -34,6 +34,7 @@ pub struct ActionRequest {
 enum Action {
     StartAnonymousThread(Thread),
     SendText(ThreadId, String),
+    TerminateThread(ThreadId),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -47,9 +48,19 @@ struct Thread {
 
 impl Thread {
     async fn send_text(&self, text: String) -> Result<()> {
+        self.send_action(Action::SendText(self.other_id.clone(), text))
+            .await
+    }
+
+    async fn terminate(&self) -> Result<()> {
+        self.send_action(Action::TerminateThread(self.other_id.clone()))
+            .await
+    }
+
+    async fn send_action(&self, action: Action) -> Result<()> {
         let (result_sender, result_receiver) = oneshot::channel();
         let action_request = ActionRequest {
-            action: Action::SendText(self.other_id.clone(), text),
+            action,
             result_sender,
         };
         self.other_handle
@@ -115,6 +126,15 @@ impl HandlerBuilder {
     pub fn handle_thread_message_received(&mut self, event: ThreadMessageReceivedEvent) {
         self.message_id_to_thread_id
             .insert(event.message_id, event.thread_id);
+    }
+
+    pub fn terminate_thread(&mut self, thread_id: &str) -> Result<()> {
+        ensure!(
+            self.threads.remove(thread_id).is_some(),
+            "thread is not found: {}",
+            thread_id,
+        );
+        Ok(())
     }
 
     pub fn build(self, bot: AutoSend<Bot>, event_service: EventServiceHandle) -> Handler {
@@ -228,6 +248,9 @@ impl Handler {
             } => {
                 self.handle_command_reply(reply_message_id, message_id, text)
                     .await?;
+            }
+            Command::Close { thread_id } => {
+                self.handle_command_close(thread_id).await?;
             }
         }
         Ok(())
@@ -400,6 +423,39 @@ impl Handler {
         Ok(())
     }
 
+    async fn handle_command_close(&mut self, thread_id: ThreadId) -> Result<()> {
+        let thread = self
+            .threads
+            .get(&thread_id)
+            .with_context(|| format!("thread {} does not exist", thread_id))?;
+
+        ensure!(
+            matches!(
+                thread.anon_mode,
+                ThreadAnonimityMode::Both | ThreadAnonimityMode::Me
+            ),
+            "cannot close a semi-anonimous thread; use `/ban` instead"
+        );
+
+        thread
+            .terminate()
+            .await
+            .context("failed to terminate peer thread")?;
+        let thread = self.threads.remove(&thread_id).unwrap();
+
+        self.event_service
+            .write(Event::ThreadTerminated(ThreadTerminatedEvent {
+                login: self.user_handle.user.login.clone(),
+                other_login: thread.other_handle.user.login.clone(),
+                my_thread_id: thread.id,
+                other_thread_id: thread.other_id,
+            }))
+            .wait_written()
+            .await?;
+
+        Ok(())
+    }
+
     async fn create_thread(
         &mut self,
         my_thread_id: ThreadId,
@@ -501,6 +557,16 @@ impl Handler {
                     .wait_written()
                     .await?;
                 self.message_id_to_thread_id.insert(message.id, thread_id);
+            }
+            Action::TerminateThread(thread_id) => {
+                self.send_to_self(format!(
+                    "Thread has been closed by the other side: {}",
+                    thread_id
+                ))
+                .await?;
+                self.threads
+                    .remove(&thread_id)
+                    .expect("thread is not found");
             }
         }
         Ok(())

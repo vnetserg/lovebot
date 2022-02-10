@@ -61,6 +61,18 @@ impl CommandDispatcherBuilder {
                         .with_context(|| format!("user not found: @{}", ev.login))?
                         .handle_thread_message_received(ev);
                 }
+                Event::ThreadTerminated(ev) => {
+                    builder
+                        .builders
+                        .get_mut(&ev.login)
+                        .with_context(|| format!("user not found: @{}", ev.login))?
+                        .terminate_thread(&ev.my_thread_id)?;
+                    builder
+                        .builders
+                        .get_mut(&ev.other_login)
+                        .with_context(|| format!("user not found: @{}", ev.login))?
+                        .terminate_thread(&ev.other_thread_id)?;
+                }
             }
             count += 1;
         }

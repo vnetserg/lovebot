@@ -560,7 +560,7 @@ impl Handler {
             }
             Action::TerminateThread(thread_id) => {
                 self.send_to_self(format!(
-                    "Thread has been closed by the other side: {}",
+                    "Thread {} has been closed by the other side.",
                     thread_id
                 ))
                 .await?;

@@ -70,7 +70,7 @@ impl CommandDispatcherBuilder {
                     builder
                         .builders
                         .get_mut(&ev.other_login)
-                        .with_context(|| format!("user not found: @{}", ev.login))?
+                        .with_context(|| format!("user not found: @{}", ev.other_login))?
                         .terminate_thread(&ev.other_thread_id)?;
                 }
             }

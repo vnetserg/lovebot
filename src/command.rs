@@ -28,6 +28,12 @@ pub enum Command {
     Close {
         thread_id: ThreadId,
     },
+    Ban {
+        thread_id: ThreadId,
+    },
+    Unban {
+        thread_id: ThreadId,
+    },
 }
 
 impl TryFrom<&Message> for Command {
@@ -73,6 +79,14 @@ impl TryFrom<&Message> for Command {
             "/close" => {
                 let thread_id = iter.next().context("no thread id specified")?.to_string();
                 Command::Close { thread_id }
+            }
+            "/ban" => {
+                let thread_id = iter.next().context("no thread id specified")?.to_string();
+                Command::Ban { thread_id }
+            }
+            "/unban" => {
+                let thread_id = iter.next().context("no thread id specified")?.to_string();
+                Command::Unban { thread_id }
             }
             _ => bail!("unknown command: {}", head),
         };

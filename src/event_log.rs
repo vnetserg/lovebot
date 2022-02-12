@@ -22,6 +22,8 @@ pub enum Event {
     ThreadStarted(ThreadStartedEvent),
     ThreadMessageReceived(ThreadMessageReceivedEvent),
     ThreadTerminated(ThreadTerminatedEvent),
+    UserBanned(UserBannedEvent),
+    UserUnbanned(UserUnbannedEvent),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,6 +54,19 @@ pub struct ThreadTerminatedEvent {
     pub other_login: String,
     pub my_thread_id: ThreadId,
     pub other_thread_id: ThreadId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserBannedEvent {
+    pub login: String,
+    pub banned_login: String,
+    pub banned_thread_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserUnbannedEvent {
+    pub login: String,
+    pub unbanned_login: String,
 }
 
 ////////////////////////////////////////////////////////////////////////////////

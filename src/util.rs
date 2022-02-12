@@ -20,12 +20,17 @@ Available commands:
 * `/random [message]` - send a message to a random user.
 * `/users` - list available users.
 * `/threads` - list active anonymous threads.
+* `/close [thread]` - close a thread.
+* `/ban [thread]` - close a thread and ban the user that started it.
+* `/unban [thread]` - unban a user that started this thread.
+* `/banlist` - show all the banned threads.
+* `/stop` - stop this bot.
 * `/help` - show this message.
 
 Hints:
 * You can reply to a message instead of using `/send` command.
 
-Should you need any further assistance, write to @sergio_4min.";
+Should you need any further assistance, contact @sergio_4min.";
 
 ////////////////////////////////////////////////////////////////////////////////
 

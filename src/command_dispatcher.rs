@@ -47,13 +47,11 @@ impl CommandDispatcherBuilder {
             let event = mb_event.context("failed to read event")?;
             match event {
                 Event::UserConnected(ev) => builder.handle_user_connected(ev),
-                Event::ThreadStarted(ev) => {
-                    builder
-                        .builders
-                        .get_mut(&ev.login)
-                        .with_context(|| format!("user not found: @{}", ev.login))?
-                        .handle_thread_started(ev)?;
-                }
+                Event::ThreadStarted(ev) => builder
+                    .builders
+                    .get_mut(&ev.login)
+                    .with_context(|| format!("user not found: @{}", ev.login))?
+                    .handle_thread_started(ev)?,
                 Event::ThreadMessageReceived(ev) => {
                     builder
                         .builders
@@ -73,6 +71,16 @@ impl CommandDispatcherBuilder {
                         .with_context(|| format!("user not found: @{}", ev.other_login))?
                         .terminate_thread(&ev.other_thread_id)?;
                 }
+                Event::UserBanned(ev) => builder
+                    .builders
+                    .get_mut(&ev.login)
+                    .with_context(|| format!("user not found: @{}", ev.login))?
+                    .handle_user_banned(ev)?,
+                Event::UserUnbanned(ev) => builder
+                    .builders
+                    .get_mut(&ev.login)
+                    .with_context(|| format!("user not found: @{}", ev.login))?
+                    .handle_user_unbanned(ev)?,
             }
             count += 1;
         }

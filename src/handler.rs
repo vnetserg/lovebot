@@ -1,7 +1,10 @@
 use crate::{
     command_dispatcher::UserHandle,
     data::{ThreadAnonimityMode, ThreadId},
-    event_log::{Event, ThreadMessageReceivedEvent, ThreadStartedEvent, ThreadTerminatedEvent},
+    event_log::{
+        Event, ThreadMessageReceivedEvent, ThreadStartedEvent, ThreadTerminatedEvent,
+        UserBannedEvent, UserUnbannedEvent,
+    },
     util::{random_adjective, random_noun, Reader, HELP_MESSAGE, START_MESSAGE},
     Command, EventServiceHandle,
 };
@@ -15,7 +18,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -84,6 +87,7 @@ pub struct HandlerBuilder {
     action_receiver: mpsc::Receiver<ActionRequest>,
     threads: HashMap<ThreadId, Thread>,
     message_id_to_thread_id: HashMap<i32, ThreadId>,
+    banlist: HashMap<String, ThreadId>,
 }
 
 impl HandlerBuilder {
@@ -102,6 +106,7 @@ impl HandlerBuilder {
             action_receiver,
             threads: HashMap::new(),
             message_id_to_thread_id: HashMap::new(),
+            banlist: HashMap::new(),
         }
     }
 
@@ -137,6 +142,22 @@ impl HandlerBuilder {
         Ok(())
     }
 
+    pub fn handle_user_banned(&mut self, event: UserBannedEvent) -> Result<()> {
+        self.threads
+            .remove(&event.banned_thread_id)
+            .with_context(|| format!("thread is not found: {}", event.banned_thread_id))?;
+        self.banlist
+            .insert(event.banned_login, event.banned_thread_id);
+        Ok(())
+    }
+
+    pub fn handle_user_unbanned(&mut self, event: UserUnbannedEvent) -> Result<()> {
+        self.banlist
+            .remove(&event.unbanned_login)
+            .with_context(|| format!("user is not banned: {}", event.unbanned_login))?;
+        Ok(())
+    }
+
     pub fn build(self, bot: AutoSend<Bot>, event_service: EventServiceHandle) -> Handler {
         Handler {
             bot,
@@ -148,6 +169,7 @@ impl HandlerBuilder {
             action_receiver: self.action_receiver,
             threads: self.threads,
             message_id_to_thread_id: self.message_id_to_thread_id,
+            banlist: self.banlist,
         }
     }
 }
@@ -164,6 +186,7 @@ pub struct Handler {
     action_receiver: mpsc::Receiver<ActionRequest>,
     threads: HashMap<ThreadId, Thread>,
     message_id_to_thread_id: HashMap<i32, ThreadId>,
+    banlist: HashMap<String, ThreadId>,
 }
 
 impl Handler {
@@ -172,7 +195,7 @@ impl Handler {
         event_service: EventServiceHandle,
         chat_id: i64,
         user_handle: UserHandle,
-        user_handles: Reader<HashMap<String, UserHandle>>,
+        handle_registry: Reader<HashMap<String, UserHandle>>,
         command_receiver: mpsc::Receiver<CommandRequest>,
         action_receiver: mpsc::Receiver<ActionRequest>,
     ) -> Self {
@@ -181,11 +204,12 @@ impl Handler {
             event_service,
             chat_id,
             user_handle,
-            handle_registry: user_handles,
+            handle_registry,
             command_receiver,
             action_receiver,
             threads: HashMap::new(),
             message_id_to_thread_id: HashMap::new(),
+            banlist: HashMap::new(),
         }
     }
 
@@ -199,6 +223,7 @@ impl Handler {
                     };
                     let result = self.handle_command(request.command).await;
                     request.result_sender.send(result).ok();
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 mb_request = self.action_receiver.recv() => {
                     let request = match mb_request {
@@ -251,6 +276,12 @@ impl Handler {
             }
             Command::Close { thread_id } => {
                 self.handle_command_close(thread_id).await?;
+            }
+            Command::Ban { thread_id } => {
+                self.handle_command_ban(thread_id).await?;
+            }
+            Command::Unban { thread_id } => {
+                self.handle_command_unban(thread_id).await?;
             }
         }
         Ok(())
@@ -373,7 +404,7 @@ impl Handler {
                 other_login: other_login.to_string(),
                 my_thread_id: thread_id.clone(),
                 other_thread_id,
-                anon_mode: ThreadAnonimityMode::Both,
+                anon_mode: ThreadAnonimityMode::Me,
             }));
         }
 
@@ -456,6 +487,58 @@ impl Handler {
         Ok(())
     }
 
+    async fn handle_command_ban(&mut self, thread_id: ThreadId) -> Result<()> {
+        let thread = self
+            .threads
+            .get(&thread_id)
+            .with_context(|| format!("thread {} does not exist", thread_id))?;
+
+        ensure!(
+            thread.anon_mode == ThreadAnonimityMode::Them,
+            "cannot ban random or non-anonimous chat; use `/close` instead",
+        );
+
+        thread
+            .terminate()
+            .await
+            .context("failed to terminate peer thread")?;
+        let thread = self.threads.remove(&thread_id).unwrap();
+
+        self.event_service
+            .write(Event::UserBanned(UserBannedEvent {
+                login: self.user_handle.user.login.clone(),
+                banned_login: thread.other_handle.user.login.clone(),
+                banned_thread_id: thread_id.clone(),
+            }))
+            .wait_written()
+            .await?;
+        self.banlist
+            .insert(thread.other_handle.user.login.clone(), thread_id);
+
+        Ok(())
+    }
+
+    async fn handle_command_unban(&mut self, thread_id: ThreadId) -> Result<()> {
+        let login = self
+            .banlist
+            .iter()
+            .find(|&(_, th)| th == &thread_id)
+            .with_context(|| format!("no {} in your ban list", thread_id))?
+            .0
+            .clone();
+
+        self.event_service
+            .write(Event::UserUnbanned(UserUnbannedEvent {
+                login: self.user_handle.user.login.clone(),
+                unbanned_login: login.clone(),
+            }))
+            .wait_written()
+            .await?;
+        self.banlist.remove(&login);
+
+        Ok(())
+    }
+
     async fn create_thread(
         &mut self,
         my_thread_id: ThreadId,
@@ -516,10 +599,18 @@ impl Handler {
     async fn handle_action(&mut self, action: Action) -> Result<()> {
         match action {
             Action::StartAnonymousThread(thread) => {
-                let thread_id = thread.id.clone();
-                if self.threads.contains_key(&thread_id) {
-                    bail!("thread id {} is already used", thread_id)
-                }
+                ensure!(
+                    !self.threads.contains_key(&thread.id),
+                    "thread id {} is already used",
+                    thread.id,
+                );
+
+                ensure!(
+                    !self.banlist.contains_key(&thread.other_handle.user.login)
+                        || thread.anon_mode != ThreadAnonimityMode::Them,
+                    "you are banned by @{}",
+                    self.user_handle.user.login,
+                );
 
                 self.event_service
                     .write(Event::ThreadStarted(ThreadStartedEvent {
@@ -531,7 +622,7 @@ impl Handler {
                     }))
                     .wait_written()
                     .await?;
-                self.threads.insert(thread_id, thread);
+                self.threads.insert(thread.id.clone(), thread);
             }
             Action::SendText(thread_id, text) => {
                 let thread = &self.threads[&thread_id];

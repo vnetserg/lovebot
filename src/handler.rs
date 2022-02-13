@@ -298,6 +298,9 @@ impl Handler {
             Command::Unban { thread_id } => {
                 self.handle_command_unban(thread_id).await?;
             }
+            Command::Banlist => {
+                self.handle_command_banlist().await?;
+            }
         }
         Ok(())
     }
@@ -580,6 +583,14 @@ impl Handler {
             .await?;
         self.banlist.remove(&login);
 
+        Ok(())
+    }
+
+    async fn handle_command_banlist(&mut self) -> Result<()> {
+        let mut banlist = self.banlist.values().cloned().collect::<Vec<_>>();
+        banlist.sort();
+        self.send_to_self(format!("Banned threads:\n* {}", banlist.join("\n* ")))
+            .await?;
         Ok(())
     }
 

@@ -34,6 +34,7 @@ pub enum Command {
     Unban {
         thread_id: ThreadId,
     },
+    Banlist,
     Stop,
 }
 
@@ -89,6 +90,7 @@ impl TryFrom<&Message> for Command {
                 let thread_id = iter.next().context("no thread id specified")?.to_string();
                 Command::Unban { thread_id }
             }
+            "/banlist" => Command::Banlist,
             "/stop" => Command::Stop,
             _ => bail!("unknown command: {}", head),
         };

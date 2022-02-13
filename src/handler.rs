@@ -589,8 +589,12 @@ impl Handler {
     async fn handle_command_banlist(&mut self) -> Result<()> {
         let mut banlist = self.banlist.values().cloned().collect::<Vec<_>>();
         banlist.sort();
-        self.send_to_self(format!("Banned threads:\n* {}", banlist.join("\n* ")))
-            .await?;
+        if banlist.is_empty() {
+            self.send_to_self("You have not banned anybody.").await?;
+        } else {
+            self.send_to_self(format!("Banned threads:\n* {}", banlist.join("\n* ")))
+                .await?;
+        }
         Ok(())
     }
 

@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use std::{
     collections::HashMap,
     io::BufRead,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -23,6 +23,7 @@ use std::{
 pub struct UserHandle {
     pub user: Arc<User>,
     pub channel: mpsc::Sender<ActionRequest>,
+    pub is_stopped: Arc<AtomicBool>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -81,6 +82,16 @@ impl CommandDispatcherBuilder {
                     .get_mut(&ev.login)
                     .with_context(|| format!("user not found: @{}", ev.login))?
                     .handle_user_unbanned(ev)?,
+                Event::UserStopped(ev) => builder
+                    .builders
+                    .get_mut(&ev.login)
+                    .with_context(|| format!("user not found: @{}", ev.login))?
+                    .handle_user_stopped(),
+                Event::UserStarted(ev) => builder
+                    .builders
+                    .get_mut(&ev.login)
+                    .with_context(|| format!("user not found: @{}", ev.login))?
+                    .handle_user_started(),
             }
             count += 1;
         }
@@ -100,6 +111,7 @@ impl CommandDispatcherBuilder {
         let user_handle = UserHandle {
             user: Arc::new(event.user),
             channel: action_sender,
+            is_stopped: Arc::new(AtomicBool::new(false)),
         };
         self.user_handles
             .write()
@@ -208,6 +220,7 @@ impl CommandDispatcher {
         let user_handle = UserHandle {
             user: user.clone(),
             channel: action_sender,
+            is_stopped: Arc::new(AtomicBool::new(false)),
         };
         let mut handler = Handler::new(
             self.bot.clone(),

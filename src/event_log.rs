@@ -24,6 +24,8 @@ pub enum Event {
     ThreadTerminated(ThreadTerminatedEvent),
     UserBanned(UserBannedEvent),
     UserUnbanned(UserUnbannedEvent),
+    UserStopped(UserStoppedEvent),
+    UserStarted(UserStartedEvent),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +69,16 @@ pub struct UserBannedEvent {
 pub struct UserUnbannedEvent {
     pub login: String,
     pub unbanned_login: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserStoppedEvent {
+    pub login: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserStartedEvent {
+    pub login: String,
 }
 
 ////////////////////////////////////////////////////////////////////////////////

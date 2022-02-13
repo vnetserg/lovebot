@@ -14,6 +14,8 @@ Hello! This is anonymous chatting bot. Quick start guide:
 
 For more commands, use `/help`.";
 
+pub const STOP_MESSAGE: &str = "The bot is stopped. Use `/start` to restart it.";
+
 pub const HELP_MESSAGE: &str = "\
 Available commands:
 * `/send [receiver] [message]` - send a message. Receiver can either be a @username or a #thread.

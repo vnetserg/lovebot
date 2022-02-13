@@ -3,9 +3,9 @@ use crate::{
     data::{ThreadAnonimityMode, ThreadId},
     event_log::{
         Event, ThreadMessageReceivedEvent, ThreadStartedEvent, ThreadTerminatedEvent,
-        UserBannedEvent, UserUnbannedEvent,
+        UserBannedEvent, UserStartedEvent, UserStoppedEvent, UserUnbannedEvent,
     },
-    util::{random_adjective, random_noun, Reader, HELP_MESSAGE, START_MESSAGE},
+    util::{random_adjective, random_noun, Reader, HELP_MESSAGE, START_MESSAGE, STOP_MESSAGE},
     Command, EventServiceHandle,
 };
 
@@ -18,7 +18,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::atomic::Ordering, time::Duration};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -158,6 +158,14 @@ impl HandlerBuilder {
         Ok(())
     }
 
+    pub fn handle_user_stopped(&mut self) {
+        self.user_handle.is_stopped.store(true, Ordering::Relaxed);
+    }
+
+    pub fn handle_user_started(&mut self) {
+        self.user_handle.is_stopped.store(false, Ordering::Relaxed);
+    }
+
     pub fn build(self, bot: AutoSend<Bot>, event_service: EventServiceHandle) -> Handler {
         Handler {
             bot,
@@ -242,9 +250,16 @@ impl Handler {
     }
 
     async fn handle_command(&mut self, command: Command) -> Result<()> {
+        ensure!(
+            !self.user_handle.is_stopped.load(Ordering::Relaxed) || command == Command::Start,
+            "you have stopped the bot. Use `/start` to restart it"
+        );
         match command {
             Command::Start => {
-                self.send_to_self(START_MESSAGE).await?;
+                self.handle_command_start().await?;
+            }
+            Command::Stop => {
+                self.handle_command_stop().await?;
             }
             Command::Help => {
                 self.send_to_self(HELP_MESSAGE).await?;
@@ -287,17 +302,46 @@ impl Handler {
         Ok(())
     }
 
+    async fn handle_command_start(&mut self) -> Result<()> {
+        self.user_handle.is_stopped.store(false, Ordering::Relaxed);
+        self.event_service
+            .write(Event::UserStarted(UserStartedEvent {
+                login: self.user_handle.user.login.clone(),
+            }))
+            .wait_written()
+            .await?;
+        self.send_to_self(START_MESSAGE).await?;
+        Ok(())
+    }
+
+    async fn handle_command_stop(&mut self) -> Result<()> {
+        self.user_handle.is_stopped.store(true, Ordering::Relaxed);
+        self.event_service
+            .write(Event::UserStopped(UserStoppedEvent {
+                login: self.user_handle.user.login.clone(),
+            }))
+            .wait_written()
+            .await?;
+        self.send_to_self(STOP_MESSAGE).await?;
+        Ok(())
+    }
+
     async fn handle_command_users(&mut self) -> Result<()> {
         let mut usernames = self
             .handle_registry
             .read()
             .expect("handler handle_registry.read() failed")
             .values()
-            .map(|h| {
-                if let Some(last_name) = h.user.last_name.as_ref() {
-                    format!("{} {} @{}", h.user.first_name, last_name, h.user.login)
+            .filter_map(|h| {
+                if h.is_stopped.load(Ordering::Relaxed) {
+                    None
+                } else if let Some(last_name) = h.user.last_name.as_ref() {
+                    Some(format!(
+                        "{} {} @{}",
+                        h.user.first_name, last_name, h.user.login
+                    ))
                 } else {
-                    format!("{} @{}", h.user.first_name, h.user.login)
+                    Some(format!("{} @{}", h.user.first_name, h.user.login))
                 }
             })
             .collect::<Vec<_>>();
@@ -597,6 +641,10 @@ impl Handler {
     }
 
     async fn handle_action(&mut self, action: Action) -> Result<()> {
+        ensure!(
+            !self.user_handle.is_stopped.load(Ordering::Relaxed),
+            "user has stopped the bot"
+        );
         match action {
             Action::StartAnonymousThread(thread) => {
                 ensure!(

@@ -5,7 +5,7 @@ use crate::data::ThreadId;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Start,
     Help,
@@ -34,6 +34,7 @@ pub enum Command {
     Unban {
         thread_id: ThreadId,
     },
+    Stop,
 }
 
 impl TryFrom<&Message> for Command {
@@ -88,6 +89,7 @@ impl TryFrom<&Message> for Command {
                 let thread_id = iter.next().context("no thread id specified")?.to_string();
                 Command::Unban { thread_id }
             }
+            "/stop" => Command::Stop,
             _ => bail!("unknown command: {}", head),
         };
         Ok(command)

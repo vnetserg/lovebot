@@ -603,6 +603,9 @@ impl Handler {
         self.send_to_self(format!("Starting broadcast to {} users...", handles.len()))
             .await?;
         for handle in handles {
+            if handle.user.login == self.user_handle.user.login {
+                continue;
+            }
             let result = handle.send_action(Action::Broadcast(text.clone())).await;
             if let Err(err) = result {
                 self.send_to_self(format!(

@@ -609,7 +609,7 @@ impl Handler {
             .read()
             .expect("handler handle_registry.read() failed")
             .get(other_login)
-            .with_context(|| format!("user @{} has not started this bot", other_login))?
+            .context("user has not started this bot")?
             .clone();
 
         let my_thread = Thread {
@@ -671,8 +671,7 @@ impl Handler {
                 ensure!(
                     !self.banlist.contains_key(&thread.other_handle.user.login)
                         || thread.anon_mode != ThreadAnonimityMode::Them,
-                    "you are banned by @{}",
-                    self.user_handle.user.login,
+                    "you are banned by this user",
                 );
 
                 self.event_service
@@ -735,11 +734,6 @@ impl Handler {
         self.bot
             .send_message(self.chat_id, message.as_ref())
             .await
-            .with_context(|| {
-                format!(
-                    "failed to send message to user @{}",
-                    self.user_handle.user.login
-                )
-            })
+            .context("failed to send message to user")
     }
 }

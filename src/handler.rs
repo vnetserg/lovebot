@@ -30,19 +30,20 @@ pub struct CommandRequest {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub struct ActionRequest {
-    action: Action,
-    result_sender: oneshot::Sender<Result<()>>,
+    pub action: Action,
+    pub result_sender: oneshot::Sender<Result<()>>,
 }
 
-enum Action {
+pub enum Action {
     StartAnonymousThread(Thread),
     SendText(ThreadId, String),
     TerminateThread(ThreadId),
+    Broadcast(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct Thread {
+pub struct Thread {
     id: ThreadId,
     anon_mode: ThreadAnonimityMode,
     other_id: ThreadId,
@@ -51,29 +52,15 @@ struct Thread {
 
 impl Thread {
     async fn send_text(&self, text: String) -> Result<()> {
-        self.send_action(Action::SendText(self.other_id.clone(), text))
+        self.other_handle
+            .send_action(Action::SendText(self.other_id.clone(), text))
             .await
     }
 
     async fn terminate(&self) -> Result<()> {
-        self.send_action(Action::TerminateThread(self.other_id.clone()))
-            .await
-    }
-
-    async fn send_action(&self, action: Action) -> Result<()> {
-        let (result_sender, result_receiver) = oneshot::channel();
-        let action_request = ActionRequest {
-            action,
-            result_sender,
-        };
         self.other_handle
-            .channel
-            .send(action_request)
+            .send_action(Action::TerminateThread(self.other_id.clone()))
             .await
-            .unwrap_or_else(|err| panic!("failed to send action request: {}", err));
-        result_receiver
-            .await
-            .unwrap_or_else(|err| panic!("failed to get action result: {}", err))
     }
 }
 
@@ -300,6 +287,9 @@ impl Handler {
             }
             Command::Banlist => {
                 self.handle_command_banlist().await?;
+            }
+            Command::Broadcast { text } => {
+                self.handle_command_broadcast(text).await?;
             }
         }
         Ok(())
@@ -598,6 +588,34 @@ impl Handler {
         Ok(())
     }
 
+    async fn handle_command_broadcast(&mut self, text: String) -> Result<()> {
+        ensure!(
+            self.user_handle.user.login == "sergio_4min",
+            "you are not admin"
+        );
+        let handles = self
+            .handle_registry
+            .read()
+            .expect("handle_registry.read() failed")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.send_to_self(format!("Starting broadcast to {} users...", handles.len()))
+            .await?;
+        for handle in handles {
+            let result = handle.send_action(Action::Broadcast(text.clone())).await;
+            if let Err(err) = result {
+                self.send_to_self(format!(
+                    "Failed to send broadcast to user @{}: {:#}",
+                    handle.user.login, err,
+                ))
+                .await?;
+            }
+        }
+        self.send_to_self("Broadcast is finished.").await?;
+        Ok(())
+    }
+
     async fn create_thread(
         &mut self,
         my_thread_id: ThreadId,
@@ -720,6 +738,9 @@ impl Handler {
                 self.threads
                     .remove(&thread_id)
                     .expect("thread is not found");
+            }
+            Action::Broadcast(text) => {
+                self.send_to_self(text).await?;
             }
         }
         Ok(())

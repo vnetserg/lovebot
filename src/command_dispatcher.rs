@@ -1,7 +1,7 @@
 use crate::{
     data::User,
     event_log::{Event, EventLogReader, EventTracker, UserConnectedEvent},
-    handler::{ActionRequest, CommandRequest, Handler, HandlerBuilder},
+    handler::{Action, ActionRequest, CommandRequest, Handler, HandlerBuilder},
     util::Writer,
     Command, EventServiceHandle,
 };
@@ -24,6 +24,23 @@ pub struct UserHandle {
     pub user: Arc<User>,
     pub channel: mpsc::Sender<ActionRequest>,
     pub is_stopped: Arc<AtomicBool>,
+}
+
+impl UserHandle {
+    pub async fn send_action(&self, action: Action) -> Result<()> {
+        let (result_sender, result_receiver) = oneshot::channel();
+        let action_request = ActionRequest {
+            action,
+            result_sender,
+        };
+        self.channel
+            .send(action_request)
+            .await
+            .unwrap_or_else(|err| panic!("failed to send action request: {}", err));
+        result_receiver
+            .await
+            .unwrap_or_else(|err| panic!("failed to get action result: {}", err))
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

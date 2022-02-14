@@ -36,6 +36,9 @@ pub enum Command {
     },
     Banlist,
     Stop,
+    Broadcast {
+        text: String,
+    },
 }
 
 impl TryFrom<&Message> for Command {
@@ -92,6 +95,11 @@ impl TryFrom<&Message> for Command {
             }
             "/banlist" => Command::Banlist,
             "/stop" => Command::Stop,
+            "/broadcast" => {
+                let text = iter.collect::<Vec<_>>().join(" ");
+                ensure!(!text.is_empty(), "empty message");
+                Command::Broadcast { text }
+            }
             _ => bail!("unknown command: {}", head),
         };
         Ok(command)
